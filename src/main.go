@@ -273,7 +273,7 @@ func load(config aws.Config, c chan<- map[string]Info) {
 	c <- result
 }
 
-func handler() (string, error) {
+func handler() error {
 	defaultConfig, _ := external.LoadDefaultAWSConfig()
 
 	results := make(map[string]chan map[string]Info)
@@ -302,7 +302,7 @@ func handler() (string, error) {
 
 	wg.Wait()
 
-	return "Done", nil
+	return nil
 }
 
 func main() {
