@@ -1,0 +1,312 @@
+package main
+
+import (
+	"bytes"
+	"encoding/json"
+	"os"
+	"strings"
+	"sync"
+	"time"
+
+	runtime "github.com/aws/aws-lambda-go/lambda"
+	"github.com/aws/aws-sdk-go-v2/aws"
+	"github.com/aws/aws-sdk-go-v2/aws/endpoints"
+	"github.com/aws/aws-sdk-go-v2/aws/external"
+	"github.com/aws/aws-sdk-go-v2/service/apigateway"
+	"github.com/aws/aws-sdk-go-v2/service/cloudformation"
+	"github.com/aws/aws-sdk-go-v2/service/cloudwatchevents"
+	"github.com/aws/aws-sdk-go-v2/service/dynamodb"
+	"github.com/aws/aws-sdk-go-v2/service/kinesis"
+	"github.com/aws/aws-sdk-go-v2/service/lambda"
+	"github.com/aws/aws-sdk-go-v2/service/s3"
+	"github.com/aws/aws-sdk-go-v2/service/sns"
+)
+
+type action func(aws.Config, chan<- Info)
+
+// Info of an aws service
+type Info struct {
+	Current int `json:"current"`
+	Limit   int `json:"limit"`
+}
+
+const defaultName = "aws-serverless-health"
+
+func getCloudFormationInfo(config aws.Config, t chan<- Info) {
+	current := make(chan int)
+	limit := make(chan int)
+
+	go getCloudFormationStackCount(config, 0, nil, current)
+	go getCloudFormationLimit(config, limit)
+
+	t <- Info{<-current, <-limit}
+
+	close(current)
+	close(limit)
+}
+
+func getCloudFormationStackCount(config aws.Config, previousCount int, nextToken *string, c chan<- int) {
+	svc := cloudformation.New(config)
+	params := &cloudformation.DescribeStacksInput{NextToken: nextToken}
+	req := svc.DescribeStacksRequest(params)
+	res, _ := req.Send()
+
+	count := previousCount + len(res.Stacks)
+
+	if res.NextToken != nil {
+		getCloudFormationStackCount(config, count, res.NextToken, c)
+	}
+
+	c <- count
+}
+
+func getCloudFormationLimit(config aws.Config, c chan<- int) {
+	svc := cloudformation.New(config)
+	params := &cloudformation.DescribeAccountLimitsInput{}
+	req := svc.DescribeAccountLimitsRequest(params)
+	res, _ := req.Send()
+
+	c <- int(*res.AccountLimits[0].Value)
+}
+
+func getAPIGatewayInfo(config aws.Config, t chan<- Info) {
+	current := make(chan int)
+	go getAPIGatewayAPICount(config, 0, nil, current)
+
+	t <- Info{<-current, 60}
+
+	close(current)
+}
+
+func getAPIGatewayAPICount(config aws.Config, previousCount int, nextPosition *string, c chan<- int) {
+	svc := apigateway.New(config)
+	params := &apigateway.GetRestApisInput{Position: nextPosition}
+	req := svc.GetRestApisRequest(params)
+	res, _ := req.Send()
+
+	count := previousCount + len(res.Items)
+
+	if res.Position != nil {
+		getAPIGatewayAPICount(config, count, res.Position, c)
+	}
+
+	c <- count
+}
+
+func getLambdaInfo(config aws.Config, t chan<- Info) {
+	oneGB := int64(1024 * 1024 * 1024)
+	svc := lambda.New(config)
+	params := &lambda.GetAccountSettingsInput{}
+	req := svc.GetAccountSettingsRequest(params)
+	res, _ := req.Send()
+
+	current := *res.AccountUsage.TotalCodeSize / oneGB
+	limit := *res.AccountLimit.TotalCodeSize / oneGB
+
+	t <- Info{int(current), int(limit)}
+}
+
+func getDynamoDBInfo(config aws.Config, t chan<- Info) {
+	current := make(chan int)
+	go getDynamoDBTableCount(config, 0, nil, current)
+
+	t <- Info{<-current, 256}
+	close(current)
+}
+
+func getDynamoDBTableCount(config aws.Config, previousCount int, nextTable *string, c chan<- int) {
+	svc := dynamodb.New(config)
+	params := &dynamodb.ListTablesInput{ExclusiveStartTableName: nextTable}
+	req := svc.ListTablesRequest(params)
+	res, _ := req.Send()
+
+	count := previousCount + len(res.TableNames)
+
+	if res.LastEvaluatedTableName != nil {
+		getDynamoDBTableCount(config, count, res.LastEvaluatedTableName, c)
+	}
+
+	c <- count
+}
+
+func getKinesisInfo(config aws.Config, t chan<- Info) {
+	current := make(chan int)
+	go getKinesisStreamCount(config, 0, nil, current)
+
+	limit := make(chan int)
+	go getKinesisLimit(config, limit)
+
+	t <- Info{<-current, <-limit}
+
+	close(current)
+	close(limit)
+}
+
+func getKinesisLimit(config aws.Config, c chan<- int) {
+	svc := kinesis.New(config)
+	params := &kinesis.DescribeLimitsInput{}
+	req := svc.DescribeLimitsRequest(params)
+	res, _ := req.Send()
+
+	c <- int(*res.ShardLimit)
+}
+
+func getKinesisStreamCount(config aws.Config, previousCount int, nextStream *string, c chan<- int) {
+	svc := kinesis.New(config)
+	params := &kinesis.ListStreamsInput{ExclusiveStartStreamName: nextStream}
+	req := svc.ListStreamsRequest(params)
+	res, _ := req.Send()
+
+	count := previousCount + len(res.StreamNames)
+
+	if *res.HasMoreStreams {
+		last := res.StreamNames[len(res.StreamNames)-1]
+		getKinesisStreamCount(config, count, &last, c)
+	}
+
+	c <- count
+}
+
+func getCloudWatchEventInfo(config aws.Config, t chan<- Info) {
+	current := make(chan int)
+	go getCloudWatchEventRuleCount(config, 0, nil, current)
+
+	t <- Info{<-current, 100}
+
+	close(current)
+}
+
+func getCloudWatchEventRuleCount(config aws.Config, previousCount int, nextToken *string, c chan<- int) {
+	svc := cloudwatchevents.New(config)
+	params := &cloudwatchevents.ListRulesInput{NextToken: nextToken}
+	req := svc.ListRulesRequest(params)
+	res, _ := req.Send()
+
+	count := previousCount + len(res.Rules)
+
+	if res.NextToken != nil {
+		getCloudWatchEventRuleCount(config, count, res.NextToken, c)
+	}
+
+	c <- count
+}
+
+func publishInSns(config aws.Config, payload []byte, wg *sync.WaitGroup) {
+	topicName := os.Getenv("SNS_TOPIC")
+	if len(topicName) == 0 {
+		topicName = defaultName
+	}
+
+	message := string(payload)
+	topicArn := getTopicArn(config, topicName, nil)
+	svc := sns.New(config)
+	params := &sns.PublishInput{TopicArn: &topicArn, Message: &message}
+	req := svc.PublishRequest(params)
+	req.Send()
+
+	wg.Done()
+}
+
+func getTopicArn(config aws.Config, topicName string, nextToken *string) string {
+	svc := sns.New(config)
+	params := &sns.ListTopicsInput{NextToken: nextToken}
+	req := svc.ListTopicsRequest(params)
+	res, _ := req.Send()
+
+	for _, topic := range res.Topics {
+		if strings.HasSuffix(*topic.TopicArn, topicName) {
+			return *topic.TopicArn
+		}
+	}
+
+	if res.NextToken != nil {
+		return getTopicArn(config, topicName, res.NextToken)
+	}
+
+	panic("Unable to find the sns topic \"" + topicName + "\".")
+}
+
+func putInS3(config aws.Config, payload []byte, wg *sync.WaitGroup) {
+	bucketName := os.Getenv("S3_BUCKET")
+	if len(bucketName) == 0 {
+		bucketName = defaultName
+	}
+
+	key := time.Now().Format("20060102150405") + ".json"
+	contentType := "text/json"
+
+	svc := s3.New(config)
+	params := &s3.PutObjectInput{
+		Bucket:       &bucketName,
+		Key:          &key,
+		ContentType:  &contentType,
+		Body:         bytes.NewReader(payload),
+		StorageClass: s3.StorageClassStandardIa}
+	req := svc.PutObjectRequest(params)
+	req.Send()
+
+	wg.Done()
+}
+
+func load(config aws.Config, c chan<- map[string]Info) {
+	actions := map[string]action{
+		"cloudFormation":  getCloudFormationInfo,
+		"apiGateway":      getAPIGatewayInfo,
+		"lambda":          getLambdaInfo,
+		"dynamodb":        getDynamoDBInfo,
+		"kinesis":         getKinesisInfo,
+		"cloudWatchEvent": getCloudFormationInfo}
+
+	results := make(map[string]chan Info)
+
+	for k, v := range actions {
+		t := make(chan Info)
+		results[k] = t
+		go v(config, t)
+	}
+
+	result := make(map[string]Info)
+	for k, v := range results {
+		result[k] = <-v
+		close(v)
+	}
+
+	c <- result
+}
+
+func handler() (string, error) {
+	defaultConfig, _ := external.LoadDefaultAWSConfig()
+
+	results := make(map[string]chan map[string]Info)
+
+	partition, _ := endpoints.NewDefaultResolver().Partitions().ForPartition("aws")
+	for region := range partition.Regions() {
+		regionConfig := defaultConfig.Copy()
+		regionConfig.Region = region
+		c := make(chan map[string]Info)
+		results[regionConfig.Region] = c
+		go load(regionConfig, c)
+	}
+
+	report := make(map[string]map[string]Info)
+	for k, v := range results {
+		report[k] = <-v
+		close(v)
+	}
+
+	payload, _ := json.Marshal(&report)
+
+	var wg sync.WaitGroup
+	wg.Add(2)
+
+	go publishInSns(defaultConfig, payload, &wg)
+	go putInS3(defaultConfig, payload, &wg)
+
+	wg.Wait()
+
+	return "Done", nil
+}
+
+func main() {
+	runtime.Start(handler)
+}
