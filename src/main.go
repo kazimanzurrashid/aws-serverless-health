@@ -8,7 +8,7 @@ import (
 	"sync"
 	"time"
 
-	runtime "github.com/aws/aws-lambda-go/lambda"
+	le "github.com/aws/aws-lambda-go/lambda"
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/endpoints"
 	"github.com/aws/aws-sdk-go-v2/aws/external"
@@ -192,6 +192,8 @@ func getCloudWatchEventRuleCount(config aws.Config, previousCount int, nextToken
 }
 
 func publishInSns(config aws.Config, payload []byte, wg *sync.WaitGroup) {
+	defer wg.Done()
+
 	topicName := os.Getenv("SNS_TOPIC")
 	if len(topicName) == 0 {
 		topicName = defaultName
@@ -203,8 +205,6 @@ func publishInSns(config aws.Config, payload []byte, wg *sync.WaitGroup) {
 	params := &sns.PublishInput{TopicArn: &topicArn, Message: &message}
 	req := svc.PublishRequest(params)
 	req.Send()
-
-	wg.Done()
 }
 
 func getTopicArn(config aws.Config, topicName string, nextToken *string) string {
@@ -227,6 +227,8 @@ func getTopicArn(config aws.Config, topicName string, nextToken *string) string 
 }
 
 func putInS3(config aws.Config, payload []byte, wg *sync.WaitGroup) {
+	defer wg.Done()
+
 	bucketName := os.Getenv("S3_BUCKET")
 	if len(bucketName) == 0 {
 		bucketName = defaultName
@@ -244,8 +246,6 @@ func putInS3(config aws.Config, payload []byte, wg *sync.WaitGroup) {
 		StorageClass: s3.StorageClassStandardIa}
 	req := svc.PutObjectRequest(params)
 	req.Send()
-
-	wg.Done()
 }
 
 func load(config aws.Config, c chan<- map[string]Info) {
@@ -258,7 +258,6 @@ func load(config aws.Config, c chan<- map[string]Info) {
 		"cloudWatchEvent": getCloudFormationInfo}
 
 	results := make(map[string]chan Info)
-
 	for k, v := range actions {
 		t := make(chan Info)
 		results[k] = t
@@ -278,7 +277,6 @@ func handler() (string, error) {
 	defaultConfig, _ := external.LoadDefaultAWSConfig()
 
 	results := make(map[string]chan map[string]Info)
-
 	partition, _ := endpoints.NewDefaultResolver().Partitions().ForPartition("aws")
 	for region := range partition.Regions() {
 		regionConfig := defaultConfig.Copy()
@@ -308,5 +306,5 @@ func handler() (string, error) {
 }
 
 func main() {
-	runtime.Start(handler)
+	le.Start(handler)
 }
