@@ -33,16 +33,15 @@ type Info struct {
 const defaultName = "aws-serverless-health"
 
 func getCloudFormationInfo(config aws.Config, t chan<- Info) {
-	current := make(chan int)
-	limit := make(chan int)
+	c := make(chan int)
+	l := make(chan int)
 
-	go getCloudFormationStackCount(config, 0, nil, current)
-	go getCloudFormationLimit(config, limit)
+	go getCloudFormationStackCount(config, 0, nil, c)
+	go getCloudFormationLimit(config, l)
 
-	t <- Info{<-current, <-limit}
+	t <- Info{<-c, <-l}
 
-	close(current)
-	close(limit)
+	close(t)
 }
 
 func getCloudFormationStackCount(config aws.Config, previousCount int, nextToken *string, c chan<- int) {
@@ -58,6 +57,8 @@ func getCloudFormationStackCount(config aws.Config, previousCount int, nextToken
 	}
 
 	c <- count
+
+	close(c)
 }
 
 func getCloudFormationLimit(config aws.Config, c chan<- int) {
@@ -67,15 +68,17 @@ func getCloudFormationLimit(config aws.Config, c chan<- int) {
 	res, _ := req.Send()
 
 	c <- int(*res.AccountLimits[0].Value)
+
+	close(c)
 }
 
 func getAPIGatewayInfo(config aws.Config, t chan<- Info) {
-	current := make(chan int)
-	go getAPIGatewayAPICount(config, 0, nil, current)
+	c := make(chan int)
+	go getAPIGatewayAPICount(config, 0, nil, c)
 
-	t <- Info{<-current, 60}
+	t <- Info{<-c, 60}
 
-	close(current)
+	close(t)
 }
 
 func getAPIGatewayAPICount(config aws.Config, previousCount int, nextPosition *string, c chan<- int) {
@@ -91,6 +94,8 @@ func getAPIGatewayAPICount(config aws.Config, previousCount int, nextPosition *s
 	}
 
 	c <- count
+
+	close(c)
 }
 
 func getLambdaInfo(config aws.Config, t chan<- Info) {
@@ -104,14 +109,17 @@ func getLambdaInfo(config aws.Config, t chan<- Info) {
 	limit := *res.AccountLimit.TotalCodeSize / oneGB
 
 	t <- Info{int(current), int(limit)}
+
+	close(t)
 }
 
 func getDynamoDBInfo(config aws.Config, t chan<- Info) {
-	current := make(chan int)
-	go getDynamoDBTableCount(config, 0, nil, current)
+	c := make(chan int)
+	go getDynamoDBTableCount(config, 0, nil, c)
 
-	t <- Info{<-current, 256}
-	close(current)
+	t <- Info{<-c, 256}
+
+	close(t)
 }
 
 func getDynamoDBTableCount(config aws.Config, previousCount int, nextTable *string, c chan<- int) {
@@ -127,19 +135,20 @@ func getDynamoDBTableCount(config aws.Config, previousCount int, nextTable *stri
 	}
 
 	c <- count
+
+	close(c)
 }
 
 func getKinesisInfo(config aws.Config, t chan<- Info) {
-	current := make(chan int)
-	go getKinesisStreamCount(config, 0, nil, current)
+	c := make(chan int)
+	go getKinesisStreamCount(config, 0, nil, c)
 
-	limit := make(chan int)
-	go getKinesisLimit(config, limit)
+	l := make(chan int)
+	go getKinesisLimit(config, l)
 
-	t <- Info{<-current, <-limit}
+	t <- Info{<-c, <-l}
 
-	close(current)
-	close(limit)
+	close(t)
 }
 
 func getKinesisLimit(config aws.Config, c chan<- int) {
@@ -149,6 +158,8 @@ func getKinesisLimit(config aws.Config, c chan<- int) {
 	res, _ := req.Send()
 
 	c <- int(*res.ShardLimit)
+
+	close(c)
 }
 
 func getKinesisStreamCount(config aws.Config, previousCount int, nextStream *string, c chan<- int) {
@@ -165,15 +176,17 @@ func getKinesisStreamCount(config aws.Config, previousCount int, nextStream *str
 	}
 
 	c <- count
+
+	close(c)
 }
 
 func getCloudWatchEventInfo(config aws.Config, t chan<- Info) {
-	current := make(chan int)
-	go getCloudWatchEventRuleCount(config, 0, nil, current)
+	c := make(chan int)
+	go getCloudWatchEventRuleCount(config, 0, nil, c)
 
-	t <- Info{<-current, 100}
+	t <- Info{<-c, 100}
 
-	close(current)
+	close(t)
 }
 
 func getCloudWatchEventRuleCount(config aws.Config, previousCount int, nextToken *string, c chan<- int) {
@@ -189,6 +202,8 @@ func getCloudWatchEventRuleCount(config aws.Config, previousCount int, nextToken
 	}
 
 	c <- count
+
+	close(c)
 }
 
 func publishInSns(config aws.Config, payload []byte, wg *sync.WaitGroup) {
@@ -267,10 +282,11 @@ func load(config aws.Config, c chan<- map[string]Info) {
 	result := make(map[string]Info)
 	for k, v := range results {
 		result[k] = <-v
-		close(v)
 	}
 
 	c <- result
+
+	close(c)
 }
 
 func handler() error {
@@ -289,7 +305,6 @@ func handler() error {
 	report := make(map[string]map[string]Info)
 	for k, v := range results {
 		report[k] = <-v
-		close(v)
 	}
 
 	payload, _ := json.Marshal(&report)
