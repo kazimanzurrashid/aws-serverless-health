@@ -3,6 +3,7 @@ package main
 import (
 	"bytes"
 	"encoding/json"
+	"fmt"
 	"os"
 	"strings"
 	"sync"
@@ -31,6 +32,8 @@ type Info struct {
 }
 
 const defaultName = "recime-serverless-health"
+
+var inLambda = len(os.Getenv("LAMBDA_TASK_ROOT")) > 0
 
 func getCloudFormationInfo(config aws.Config, t chan<- Info) {
 	c := make(chan int)
@@ -309,17 +312,25 @@ func handler() error {
 
 	payload, _ := json.Marshal(&report)
 
-	var wg sync.WaitGroup
-	wg.Add(2)
+	if inLambda {
+		var wg sync.WaitGroup
+		wg.Add(2)
 
-	go publishInSns(defaultConfig, payload, &wg)
-	go putInS3(defaultConfig, payload, &wg)
+		go publishInSns(defaultConfig, payload, &wg)
+		go putInS3(defaultConfig, payload, &wg)
 
-	wg.Wait()
+		wg.Wait()
+	} else {
+		fmt.Println(string(payload))
+	}
 
 	return nil
 }
 
 func main() {
-	le.Start(handler)
+	if inLambda {
+		le.Start(handler)
+	} else {
+		handler()
+	}
 }
