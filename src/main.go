@@ -31,7 +31,7 @@ type Info struct {
 	Limit   int `json:"limit"`
 }
 
-const defaultName = "recime-serverless-health"
+const defaultName = "aws-serverless-health"
 
 var inLambda = len(os.Getenv("LAMBDA_TASK_ROOT")) > 0
 
