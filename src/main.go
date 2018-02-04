@@ -30,7 +30,7 @@ type Info struct {
 	Limit   int `json:"limit"`
 }
 
-const defaultName = "aws-serverless-health"
+const defaultName = "recime-serverless-health"
 
 func getCloudFormationInfo(config aws.Config, t chan<- Info) {
 	c := make(chan int)
@@ -270,7 +270,7 @@ func load(config aws.Config, c chan<- map[string]Info) {
 		"lambda":          getLambdaInfo,
 		"dynamodb":        getDynamoDBInfo,
 		"kinesis":         getKinesisInfo,
-		"cloudWatchEvent": getCloudFormationInfo}
+		"cloudWatchEvent": getCloudWatchEventInfo}
 
 	results := make(map[string]chan Info)
 	for k, v := range actions {
