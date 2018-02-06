@@ -33,7 +33,7 @@ type Info struct {
 
 const defaultName = "aws-serverless-health"
 
-var inLambda = len(os.Getenv("LAMBDA_TASK_ROOT")) > 0
+var inLambda = os.Getenv("LAMBDA_TASK_ROOT") != ""
 
 func getCloudFormationInfo(config aws.Config, t chan<- Info) {
 	c := make(chan int)
@@ -213,7 +213,7 @@ func publishInSns(config aws.Config, payload []byte, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	topicName := os.Getenv("SNS_TOPIC")
-	if len(topicName) == 0 {
+	if topicName == "" {
 		topicName = defaultName
 	}
 
@@ -248,7 +248,7 @@ func putInS3(config aws.Config, payload []byte, wg *sync.WaitGroup) {
 	defer wg.Done()
 
 	bucketName := os.Getenv("S3_BUCKET")
-	if len(bucketName) == 0 {
+	if bucketName == "" {
 		bucketName = defaultName
 	}
 
