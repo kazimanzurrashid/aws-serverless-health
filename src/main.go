@@ -23,10 +23,10 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/sns"
 )
 
-type action func(aws.Config, chan<- Info)
+type action func(aws.Config, chan<- info)
 
-// Info of an aws service
-type Info struct {
+// info of an aws service
+type info struct {
 	Current int `json:"current"`
 	Limit   int `json:"limit"`
 }
@@ -35,14 +35,14 @@ const defaultName = "aws-serverless-health"
 
 var inLambda = os.Getenv("LAMBDA_TASK_ROOT") != ""
 
-func getCloudFormationInfo(config aws.Config, t chan<- Info) {
+func getCloudFormationInfo(config aws.Config, t chan<- info) {
 	c := make(chan int)
 	l := make(chan int)
 
 	go getCloudFormationStackCount(config, 0, nil, c)
 	go getCloudFormationLimit(config, l)
 
-	t <- Info{<-c, <-l}
+	t <- info{<-c, <-l}
 
 	close(t)
 }
@@ -75,11 +75,11 @@ func getCloudFormationLimit(config aws.Config, c chan<- int) {
 	close(c)
 }
 
-func getAPIGatewayInfo(config aws.Config, t chan<- Info) {
+func getAPIGatewayInfo(config aws.Config, t chan<- info) {
 	c := make(chan int)
 	go getAPIGatewayAPICount(config, 0, nil, c)
 
-	t <- Info{<-c, 60}
+	t <- info{<-c, 60}
 
 	close(t)
 }
@@ -101,7 +101,7 @@ func getAPIGatewayAPICount(config aws.Config, previousCount int, nextPosition *s
 	close(c)
 }
 
-func getLambdaInfo(config aws.Config, t chan<- Info) {
+func getLambdaInfo(config aws.Config, t chan<- info) {
 	oneGB := int64(1024 * 1024 * 1024)
 	svc := lambda.New(config)
 	params := &lambda.GetAccountSettingsInput{}
@@ -111,16 +111,16 @@ func getLambdaInfo(config aws.Config, t chan<- Info) {
 	current := *res.AccountUsage.TotalCodeSize / oneGB
 	limit := *res.AccountLimit.TotalCodeSize / oneGB
 
-	t <- Info{int(current), int(limit)}
+	t <- info{int(current), int(limit)}
 
 	close(t)
 }
 
-func getDynamoDBInfo(config aws.Config, t chan<- Info) {
+func getDynamoDBInfo(config aws.Config, t chan<- info) {
 	c := make(chan int)
 	go getDynamoDBTableCount(config, 0, nil, c)
 
-	t <- Info{<-c, 256}
+	t <- info{<-c, 256}
 
 	close(t)
 }
@@ -142,14 +142,14 @@ func getDynamoDBTableCount(config aws.Config, previousCount int, nextTable *stri
 	close(c)
 }
 
-func getKinesisInfo(config aws.Config, t chan<- Info) {
+func getKinesisInfo(config aws.Config, t chan<- info) {
 	c := make(chan int)
 	go getKinesisStreamCount(config, 0, nil, c)
 
 	l := make(chan int)
 	go getKinesisLimit(config, l)
 
-	t <- Info{<-c, <-l}
+	t <- info{<-c, <-l}
 
 	close(t)
 }
@@ -183,11 +183,11 @@ func getKinesisStreamCount(config aws.Config, previousCount int, nextStream *str
 	close(c)
 }
 
-func getCloudWatchEventInfo(config aws.Config, t chan<- Info) {
+func getCloudWatchEventInfo(config aws.Config, t chan<- info) {
 	c := make(chan int)
 	go getCloudWatchEventRuleCount(config, 0, nil, c)
 
-	t <- Info{<-c, 100}
+	t <- info{<-c, 100}
 
 	close(t)
 }
@@ -266,7 +266,7 @@ func putInS3(config aws.Config, payload []byte, wg *sync.WaitGroup) {
 	req.Send()
 }
 
-func load(config aws.Config, c chan<- map[string]Info) {
+func load(config aws.Config, c chan<- map[string]info) {
 	actions := map[string]action{
 		"cloudFormation":  getCloudFormationInfo,
 		"apiGateway":      getAPIGatewayInfo,
@@ -275,14 +275,14 @@ func load(config aws.Config, c chan<- map[string]Info) {
 		"kinesis":         getKinesisInfo,
 		"cloudWatchEvent": getCloudWatchEventInfo}
 
-	results := make(map[string]chan Info)
+	results := make(map[string]chan info)
 	for k, v := range actions {
-		t := make(chan Info)
+		t := make(chan info)
 		results[k] = t
 		go v(config, t)
 	}
 
-	result := make(map[string]Info)
+	result := make(map[string]info)
 	for k, v := range results {
 		result[k] = <-v
 	}
@@ -295,17 +295,17 @@ func load(config aws.Config, c chan<- map[string]Info) {
 func handler() error {
 	defaultConfig, _ := external.LoadDefaultAWSConfig()
 
-	results := make(map[string]chan map[string]Info)
+	results := make(map[string]chan map[string]info)
 	partition, _ := endpoints.NewDefaultResolver().Partitions().ForPartition("aws")
 	for region := range partition.Regions() {
 		regionConfig := defaultConfig.Copy()
 		regionConfig.Region = region
-		c := make(chan map[string]Info)
+		c := make(chan map[string]info)
 		results[regionConfig.Region] = c
 		go load(regionConfig, c)
 	}
 
-	report := make(map[string]map[string]Info)
+	report := make(map[string]map[string]info)
 	for k, v := range results {
 		report[k] = <-v
 	}
