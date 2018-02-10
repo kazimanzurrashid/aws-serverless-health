@@ -12,5 +12,7 @@
 *.out
 debug
 
+vendor/
+
 .idea/
 .vscode/

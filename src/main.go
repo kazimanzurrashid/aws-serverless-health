@@ -25,7 +25,6 @@ import (
 
 type action func(aws.Config, chan<- info)
 
-// info of an aws service
 type info struct {
 	Current int `json:"current"`
 	Limit   int `json:"limit"`
