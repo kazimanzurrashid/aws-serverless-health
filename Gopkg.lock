@@ -2,16 +2,20 @@
 
 
 [[projects]]
+  digest = "1:f72cb64e41191cfd2298306e1966b494ed0a66cd3b709025a4e662727016fe7e"
   name = "github.com/aws/aws-lambda-go"
   packages = [
     "lambda",
+    "lambda/handlertrace",
     "lambda/messages",
-    "lambdacontext"
+    "lambdacontext",
   ]
-  revision = "fafa7e49388b8991caf99308e80655ba91816b72"
-  version = "v1.1.0"
+  pruneopts = "UT"
+  revision = "ec56cb71d7d3e87e21d2151131d4360c25a304d8"
+  version = "v1.13.0"
 
 [[projects]]
+  digest = "1:5dff7ab3d49f5c59e9b6e3d522ec61ce44572d67d50fb82e4b01f43ecdda896d"
   name = "github.com/aws/aws-sdk-go-v2"
   packages = [
     "aws",
@@ -25,8 +29,10 @@
     "aws/signer/v4",
     "aws/stscreds",
     "internal/awsutil",
+    "internal/ini",
     "internal/sdk",
     "private/protocol",
+    "private/protocol/json",
     "private/protocol/json/jsonutil",
     "private/protocol/jsonrpc",
     "private/protocol/query",
@@ -34,6 +40,7 @@
     "private/protocol/rest",
     "private/protocol/restjson",
     "private/protocol/restxml",
+    "private/protocol/xml",
     "private/protocol/xml/xmlutil",
     "service/apigateway",
     "service/cloudformation",
@@ -43,25 +50,35 @@
     "service/lambda",
     "service/s3",
     "service/sns",
-    "service/sts"
+    "service/sts",
   ]
-  revision = "b8e7febd4b80c6517240e473410b54d4e63fed1d"
-  version = "v2.0.0-preview.2"
+  pruneopts = "UT"
+  revision = "d52522b5f4b95591ff6528d7c54923951aadf099"
+  version = "v2.0.0-preview.5"
 
 [[projects]]
-  name = "github.com/go-ini/ini"
-  packages = ["."]
-  revision = "32e4c1e6bc4e7d0d8451aa6b75200d19e37a536a"
-  version = "v1.32.0"
-
-[[projects]]
+  digest = "1:e22af8c7518e1eab6f2eab2b7d7558927f816262586cd6ed9f349c97a6c285c4"
   name = "github.com/jmespath/go-jmespath"
   packages = ["."]
+  pruneopts = "UT"
   revision = "0b12d6b5"
 
 [solve-meta]
   analyzer-name = "dep"
   analyzer-version = 1
-  inputs-digest = "b4c67285a8906bcfe73dbb25e65e3d0a4adedfddf8761d2630b9bf7118e2b91c"
+  input-imports = [
+    "github.com/aws/aws-lambda-go/lambda",
+    "github.com/aws/aws-sdk-go-v2/aws",
+    "github.com/aws/aws-sdk-go-v2/aws/endpoints",
+    "github.com/aws/aws-sdk-go-v2/aws/external",
+    "github.com/aws/aws-sdk-go-v2/service/apigateway",
+    "github.com/aws/aws-sdk-go-v2/service/cloudformation",
+    "github.com/aws/aws-sdk-go-v2/service/cloudwatchevents",
+    "github.com/aws/aws-sdk-go-v2/service/dynamodb",
+    "github.com/aws/aws-sdk-go-v2/service/kinesis",
+    "github.com/aws/aws-sdk-go-v2/service/lambda",
+    "github.com/aws/aws-sdk-go-v2/service/s3",
+    "github.com/aws/aws-sdk-go-v2/service/sns",
+  ]
   solver-name = "gps-cdcl"
   solver-version = 1
