@@ -221,7 +221,7 @@ func publishInSns(config aws.Config, payload []byte, wg *sync.WaitGroup) {
 	svc := sns.New(config)
 	params := &sns.PublishInput{TopicArn: &topicArn, Message: &message}
 	req := svc.PublishRequest(params)
-	req.Send()
+	_, _ = req.Send()
 }
 
 func getTopicArn(config aws.Config, topicName string, nextToken *string) string {
@@ -262,7 +262,7 @@ func putInS3(config aws.Config, payload []byte, wg *sync.WaitGroup) {
 		Body:         bytes.NewReader(payload),
 		StorageClass: s3.StorageClassStandardIa}
 	req := svc.PutObjectRequest(params)
-	req.Send()
+	_, _ = req.Send()
 }
 
 func load(config aws.Config, c chan<- map[string]info) {
@@ -330,6 +330,6 @@ func main() {
 	if inLambda {
 		le.Start(handler)
 	} else {
-		handler()
+		_ = handler()
 	}
 }
