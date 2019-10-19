@@ -2,9 +2,11 @@ package main
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -21,214 +23,354 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/lambda"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/sns"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 )
-
-type action func(aws.Config, chan<- info)
 
 type info struct {
 	Current int `json:"current"`
 	Limit   int `json:"limit"`
 }
 
+type action func(context.Context, aws.Config, chan<- info)
+
 const defaultName = "aws-serverless-health"
 
 var inLambda = os.Getenv("LAMBDA_TASK_ROOT") != ""
 
-func getCloudFormationInfo(config aws.Config, t chan<- info) {
+func logError(cfg aws.Config, err error) {
+	fmt.Printf("%v: %v\n", cfg.Region, err)
+}
+
+func getCloudFormationInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
+	defer close(out)
+
 	c := make(chan int)
 	l := make(chan int)
 
-	go getCloudFormationStackCount(config, 0, nil, c)
-	go getCloudFormationLimit(config, l)
+	go func() {
+		count := getCloudFormationStackCount(ctx, cfg, 0, nil)
+		c <- count
+		close(c)
+	}()
 
-	t <- info{<-c, <-l}
+	go func() {
+		limit := getCloudFormationLimit(ctx, cfg)
+		l <- limit
+		close(l)
+	}()
 
-	close(t)
+	out <- info{<-c, <-l}
 }
 
-func getCloudFormationStackCount(config aws.Config, previousCount int, nextToken *string, c chan<- int) {
-	svc := cloudformation.New(config)
-	params := &cloudformation.DescribeStacksInput{NextToken: nextToken}
+func getCloudFormationStackCount(ctx context.Context, cfg aws.Config, runningCount int, lastToken *string) int {
+	svc := cloudformation.New(cfg)
+	params := &cloudformation.DescribeStacksInput{NextToken: lastToken}
 	req := svc.DescribeStacksRequest(params)
-	res, _ := req.Send()
+	res, err := req.Send(ctx)
 
-	count := previousCount + len(res.Stacks)
+	if err != nil {
+		logError(cfg, err)
+		return runningCount
+	}
+
+	var count int
+
+	if res.Stacks != nil {
+		count = runningCount + len(res.Stacks)
+	}
 
 	if res.NextToken != nil {
-		getCloudFormationStackCount(config, count, res.NextToken, c)
+		return getCloudFormationStackCount(ctx, cfg, count, res.NextToken)
 	}
 
-	c <- count
-
-	close(c)
+	return count
 }
 
-func getCloudFormationLimit(config aws.Config, c chan<- int) {
-	svc := cloudformation.New(config)
+func getCloudFormationLimit(ctx context.Context, cfg aws.Config) int {
+	svc := cloudformation.New(cfg)
 	params := &cloudformation.DescribeAccountLimitsInput{}
 	req := svc.DescribeAccountLimitsRequest(params)
-	res, _ := req.Send()
+	res, err := req.Send(ctx)
 
-	c <- int(*res.AccountLimits[0].Value)
+	var r int
 
-	close(c)
-}
-
-func getAPIGatewayInfo(config aws.Config, t chan<- info) {
-	c := make(chan int)
-	go getAPIGatewayAPICount(config, 0, nil, c)
-
-	t <- info{<-c, 60}
-
-	close(t)
-}
-
-func getAPIGatewayAPICount(config aws.Config, previousCount int, nextPosition *string, c chan<- int) {
-	svc := apigateway.New(config)
-	params := &apigateway.GetRestApisInput{Position: nextPosition}
-	req := svc.GetRestApisRequest(params)
-	res, _ := req.Send()
-
-	count := previousCount + len(res.Items)
-
-	if res.Position != nil {
-		getAPIGatewayAPICount(config, count, res.Position, c)
+	if err != nil {
+		logError(cfg, err)
+		return r
 	}
 
-	c <- count
+	if res.AccountLimits != nil {
+		for _, limit := range res.AccountLimits {
+			if *limit.Name == "StackLimit" {
+				r = int(*limit.Value)
+				break
+			}
+		}
+	}
 
-	close(c)
+	return r
 }
 
-func getLambdaInfo(config aws.Config, t chan<- info) {
+func getAPIGatewayInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
+	defer close(out)
+
+	c := make(chan int)
+	go func() {
+		count := getAPIGatewayAPICount(ctx, cfg, 0, nil)
+		c <- count
+		close(c)
+	}()
+
+	out <- info{<-c, 60}
+}
+
+func getAPIGatewayAPICount(ctx context.Context, cfg aws.Config, runningCount int, lastPosition *string) int {
+	svc := apigateway.New(cfg)
+	params := &apigateway.GetRestApisInput{Position: lastPosition}
+	req := svc.GetRestApisRequest(params)
+	res, err := req.Send(ctx)
+
+	if err != nil {
+		logError(cfg, err)
+		return runningCount
+	}
+
+	var count int
+
+	if res.Items != nil {
+		count = runningCount + len(res.Items)
+	}
+
+	if res.Position != nil {
+		return getAPIGatewayAPICount(ctx, cfg, count, res.Position)
+	}
+
+	return count
+}
+
+func getLambdaInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
+	defer close(out)
+
 	oneGB := int64(1024 * 1024 * 1024)
-	svc := lambda.New(config)
+	svc := lambda.New(cfg)
 	params := &lambda.GetAccountSettingsInput{}
 	req := svc.GetAccountSettingsRequest(params)
-	res, _ := req.Send()
+	res, err := req.Send(ctx)
+
+	if err != nil {
+		logError(cfg, err)
+		out <- info{0, 0}
+		return
+	}
 
 	current := *res.AccountUsage.TotalCodeSize / oneGB
 	limit := *res.AccountLimit.TotalCodeSize / oneGB
 
-	t <- info{int(current), int(limit)}
-
-	close(t)
+	out <- info{int(current), int(limit)}
 }
 
-func getDynamoDBInfo(config aws.Config, t chan<- info) {
+func getDynamoDBInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
+	defer close(out)
+
 	c := make(chan int)
-	go getDynamoDBTableCount(config, 0, nil, c)
 
-	t <- info{<-c, 256}
+	go func() {
+		count := getDynamoDBTableCount(ctx, cfg, 0, nil)
+		c <- count
+		close(c)
+	}()
 
-	close(t)
+	out <- info{<-c, 256}
 }
 
-func getDynamoDBTableCount(config aws.Config, previousCount int, nextTable *string, c chan<- int) {
-	svc := dynamodb.New(config)
-	params := &dynamodb.ListTablesInput{ExclusiveStartTableName: nextTable}
+func getDynamoDBTableCount(ctx context.Context, cfg aws.Config, runningCount int, lastTable *string) int {
+	svc := dynamodb.New(cfg)
+	params := &dynamodb.ListTablesInput{ExclusiveStartTableName: lastTable}
 	req := svc.ListTablesRequest(params)
-	res, _ := req.Send()
+	res, err := req.Send(ctx)
 
-	count := previousCount + len(res.TableNames)
+	if err != nil {
+		logError(cfg, err)
+		return runningCount
+	}
+
+	var count int
+
+	if res.TableNames != nil {
+		count = runningCount + len(res.TableNames)
+	}
 
 	if res.LastEvaluatedTableName != nil {
-		getDynamoDBTableCount(config, count, res.LastEvaluatedTableName, c)
+		return getDynamoDBTableCount(ctx, cfg, count, res.LastEvaluatedTableName)
 	}
 
-	c <- count
-
-	close(c)
+	return count
 }
 
-func getKinesisInfo(config aws.Config, t chan<- info) {
+func getKinesisInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
+	defer close(out)
+
 	c := make(chan int)
-	go getKinesisStreamCount(config, 0, nil, c)
-
 	l := make(chan int)
-	go getKinesisLimit(config, l)
 
-	t <- info{<-c, <-l}
+	go func() {
+		count := getKinesisStreamCount(ctx, cfg, 0, nil)
+		c <- count
+		close(c)
+	}()
 
-	close(t)
+	go func() {
+		limit := getKinesisLimit(ctx, cfg)
+		l <- limit
+		close(l)
+	}()
+
+	out <- info{<-c, <-l}
 }
 
-func getKinesisLimit(config aws.Config, c chan<- int) {
-	svc := kinesis.New(config)
+func getKinesisStreamCount(ctx context.Context, cfg aws.Config, runningCount int, lastStream *string) int {
+	svc := kinesis.New(cfg)
+	params := &kinesis.ListStreamsInput{ExclusiveStartStreamName: lastStream}
+	req := svc.ListStreamsRequest(params)
+	res, err := req.Send(ctx)
+
+	if err != nil {
+		logError(cfg, err)
+		return runningCount
+	}
+
+	var count int
+
+	if res.StreamNames != nil {
+		length := len(res.StreamNames)
+		count = runningCount + length
+		if *res.HasMoreStreams {
+			last := res.StreamNames[length-1]
+			return getKinesisStreamCount(ctx, cfg, count, &last)
+		}
+	}
+
+	return count
+}
+
+func getKinesisLimit(ctx context.Context, cfg aws.Config) int {
+	svc := kinesis.New(cfg)
 	params := &kinesis.DescribeLimitsInput{}
 	req := svc.DescribeLimitsRequest(params)
-	res, _ := req.Send()
+	res, err := req.Send(ctx)
 
-	c <- int(*res.ShardLimit)
+	var limit int
 
-	close(c)
-}
-
-func getKinesisStreamCount(config aws.Config, previousCount int, nextStream *string, c chan<- int) {
-	svc := kinesis.New(config)
-	params := &kinesis.ListStreamsInput{ExclusiveStartStreamName: nextStream}
-	req := svc.ListStreamsRequest(params)
-	res, _ := req.Send()
-
-	count := previousCount + len(res.StreamNames)
-
-	if *res.HasMoreStreams {
-		last := res.StreamNames[len(res.StreamNames)-1]
-		getKinesisStreamCount(config, count, &last, c)
+	if err != nil {
+		logError(cfg, err)
+		return limit
 	}
 
-	c <- count
+	if res.ShardLimit != nil {
+		limit = int(*res.ShardLimit)
+	}
 
-	close(c)
+	return limit
 }
 
-func getCloudWatchEventInfo(config aws.Config, t chan<- info) {
+func getCloudWatchEventInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
+	defer close(out)
+
 	c := make(chan int)
-	go getCloudWatchEventRuleCount(config, 0, nil, c)
 
-	t <- info{<-c, 100}
+	go func() {
+		count := getCloudWatchEventRuleCount(ctx, cfg, 0, nil)
+		c <- count
+		close(c)
+	}()
 
-	close(t)
+	out <- info{<-c, 100}
 }
 
-func getCloudWatchEventRuleCount(config aws.Config, previousCount int, nextToken *string, c chan<- int) {
-	svc := cloudwatchevents.New(config)
-	params := &cloudwatchevents.ListRulesInput{NextToken: nextToken}
+func getCloudWatchEventRuleCount(ctx context.Context, cfg aws.Config, runningCount int, lastToken *string) int {
+	svc := cloudwatchevents.New(cfg)
+	params := &cloudwatchevents.ListRulesInput{NextToken: lastToken}
 	req := svc.ListRulesRequest(params)
-	res, _ := req.Send()
+	res, err := req.Send(ctx)
 
-	count := previousCount + len(res.Rules)
+	if err != nil {
+		logError(cfg, err)
+		return runningCount
+	}
+
+	var count int
+
+	if res.Rules != nil {
+		count = runningCount + len(res.Rules)
+	}
 
 	if res.NextToken != nil {
-		getCloudWatchEventRuleCount(config, count, res.NextToken, c)
+		return getCloudWatchEventRuleCount(ctx, cfg, count, res.NextToken)
 	}
 
-	c <- count
-
-	close(c)
+	return count
 }
 
-func publishInSns(config aws.Config, payload []byte, wg *sync.WaitGroup) {
-	defer wg.Done()
+func getSupportedRegions(ctx context.Context, baseRegion aws.Config) []string {
+	mapping := make(map[string]chan bool)
 
+	partition, _ := endpoints.NewDefaultResolver().Partitions().ForPartition("aws")
+
+	for region := range partition.Regions() {
+		cfg := baseRegion.Copy()
+		cfg.Region = region
+
+		e := make(chan bool)
+
+		go func(c chan bool, r aws.Config) {
+			c <- enabled(ctx, r)
+			close(c)
+		}(e, cfg)
+
+		mapping[region] = e
+	}
+
+	var regions []string
+
+	for k, v := range mapping {
+		if <-v {
+			regions = append(regions, k)
+		}
+	}
+
+	sort.Strings(regions)
+
+	return regions
+}
+
+func enabled(ctx context.Context, cfg aws.Config) bool {
+	svc := sts.New(cfg)
+	params := &sts.GetCallerIdentityInput{}
+	req := svc.GetCallerIdentityRequest(params)
+	_, err := req.Send(ctx)
+
+	return err == nil
+}
+
+func publishInSns(ctx context.Context, cfg aws.Config, payload []byte) {
 	topicName := os.Getenv("SNS_TOPIC")
 	if topicName == "" {
 		topicName = defaultName
 	}
 
 	message := string(payload)
-	topicArn := getTopicArn(config, topicName, nil)
-	svc := sns.New(config)
+	topicArn := getTopicArn(ctx, cfg, topicName, nil)
+	svc := sns.New(cfg)
 	params := &sns.PublishInput{TopicArn: &topicArn, Message: &message}
 	req := svc.PublishRequest(params)
-	_, _ = req.Send()
+	_, _ = req.Send(ctx)
 }
 
-func getTopicArn(config aws.Config, topicName string, nextToken *string) string {
-	svc := sns.New(config)
-	params := &sns.ListTopicsInput{NextToken: nextToken}
+func getTopicArn(ctx context.Context, cfg aws.Config, topicName string, lastToken *string) string {
+	svc := sns.New(cfg)
+	params := &sns.ListTopicsInput{NextToken: lastToken}
 	req := svc.ListTopicsRequest(params)
-	res, _ := req.Send()
+	res, _ := req.Send(ctx)
 
 	for _, topic := range res.Topics {
 		if strings.HasSuffix(*topic.TopicArn, topicName) {
@@ -237,15 +379,13 @@ func getTopicArn(config aws.Config, topicName string, nextToken *string) string 
 	}
 
 	if res.NextToken != nil {
-		return getTopicArn(config, topicName, res.NextToken)
+		return getTopicArn(ctx, cfg, topicName, res.NextToken)
 	}
 
 	panic("Unable to find the sns topic \"" + topicName + "\".")
 }
 
-func putInS3(config aws.Config, payload []byte, wg *sync.WaitGroup) {
-	defer wg.Done()
-
+func putInS3(ctx context.Context, cfg aws.Config, payload []byte) {
 	bucketName := os.Getenv("S3_BUCKET")
 	if bucketName == "" {
 		bucketName = defaultName
@@ -254,18 +394,20 @@ func putInS3(config aws.Config, payload []byte, wg *sync.WaitGroup) {
 	key := time.Now().Format("20060102150405") + ".json"
 	contentType := "text/json"
 
-	svc := s3.New(config)
+	svc := s3.New(cfg)
 	params := &s3.PutObjectInput{
 		Bucket:       &bucketName,
 		Key:          &key,
 		ContentType:  &contentType,
 		Body:         bytes.NewReader(payload),
-		StorageClass: s3.StorageClassStandardIa}
+		StorageClass: s3.StorageClassReducedRedundancy}
 	req := svc.PutObjectRequest(params)
-	_, _ = req.Send()
+	_, _ = req.Send(ctx)
 }
 
-func load(config aws.Config, c chan<- map[string]info) {
+func load(ctx context.Context, cfg aws.Config, out chan<- map[string]info) {
+	defer close(out)
+
 	actions := map[string]action{
 		"cloudFormation":  getCloudFormationInfo,
 		"apiGateway":      getAPIGatewayInfo,
@@ -278,7 +420,7 @@ func load(config aws.Config, c chan<- map[string]info) {
 	for k, v := range actions {
 		t := make(chan info)
 		results[k] = t
-		go v(config, t)
+		go v(ctx, cfg, t)
 	}
 
 	result := make(map[string]info)
@@ -286,22 +428,21 @@ func load(config aws.Config, c chan<- map[string]info) {
 		result[k] = <-v
 	}
 
-	c <- result
-
-	close(c)
+	out <- result
 }
 
-func handler() error {
-	defaultConfig, _ := external.LoadDefaultAWSConfig()
+func handler(ctx context.Context) error {
+	base, _ := external.LoadDefaultAWSConfig()
 
 	results := make(map[string]chan map[string]info)
-	partition, _ := endpoints.NewDefaultResolver().Partitions().ForPartition("aws")
-	for region := range partition.Regions() {
-		regionConfig := defaultConfig.Copy()
-		regionConfig.Region = region
+	regions := getSupportedRegions(ctx, base)
+
+	for _, region := range regions {
+		cfg := base.Copy()
+		cfg.Region = region
 		c := make(chan map[string]info)
-		results[regionConfig.Region] = c
-		go load(regionConfig, c)
+		results[cfg.Region] = c
+		go load(ctx, cfg, c)
 	}
 
 	report := make(map[string]map[string]info)
@@ -309,17 +450,24 @@ func handler() error {
 		report[k] = <-v
 	}
 
-	payload, _ := json.Marshal(&report)
-
 	if inLambda {
+		payload, _ := json.Marshal(&report)
 		var wg sync.WaitGroup
 		wg.Add(2)
 
-		go publishInSns(defaultConfig, payload, &wg)
-		go putInS3(defaultConfig, payload, &wg)
+		go func() {
+			publishInSns(ctx, base, payload)
+			wg.Done()
+		}()
+
+		go func() {
+			putInS3(ctx, base, payload)
+			wg.Done()
+		}()
 
 		wg.Wait()
 	} else {
+		payload, _ := json.MarshalIndent(&report, "", "  ")
 		fmt.Println(string(payload))
 	}
 
@@ -330,6 +478,6 @@ func main() {
 	if inLambda {
 		le.Start(handler)
 	} else {
-		_ = handler()
+		_ = handler(context.Background())
 	}
 }

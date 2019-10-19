@@ -15,7 +15,7 @@
   version = "v1.13.2"
 
 [[projects]]
-  digest = "1:9eb0fa463b2d79729cc306d3a0b1449b3ff24652df9e30c052d367a84b5ed96f"
+  digest = "1:7d03cf3e3dec91e192bbc8497372bd7657b115d6903cea17af36bb1d3be66e5d"
   name = "github.com/aws/aws-sdk-go-v2"
   packages = [
     "aws",
@@ -53,8 +53,8 @@
     "service/sts",
   ]
   pruneopts = "UT"
-  revision = "c2b476bac53067cebc587747e866881b2e383625"
-  version = "v0.7.0"
+  revision = "ca0c9eedb2220a76cb90bf7775b14debd771fd03"
+  version = "v0.14.0"
 
 [[projects]]
   digest = "1:bb81097a5b62634f3e9fec1014657855610c82d19b9a40c17612e32651e35dca"
@@ -62,6 +62,44 @@
   packages = ["."]
   pruneopts = "UT"
   revision = "c2b33e84"
+
+[[projects]]
+  branch = "master"
+  digest = "1:69ee2954e0006a4b8907ce5130a2df12195f443a7c570aa3afb98f8aae65ae7a"
+  name = "golang.org/x/net"
+  packages = [
+    "http/httpguts",
+    "http2",
+    "http2/hpack",
+    "idna",
+  ]
+  pruneopts = "UT"
+  revision = "da9a3fd4c5820e74b24a6cb7fb438dc9b0dd377c"
+
+[[projects]]
+  digest = "1:8d8faad6b12a3a4c819a3f9618cb6ee1fa1cfc33253abeeea8b55336721e3405"
+  name = "golang.org/x/text"
+  packages = [
+    "collate",
+    "collate/build",
+    "internal/colltab",
+    "internal/gen",
+    "internal/language",
+    "internal/language/compact",
+    "internal/tag",
+    "internal/triegen",
+    "internal/ucd",
+    "language",
+    "secure/bidirule",
+    "transform",
+    "unicode/bidi",
+    "unicode/cldr",
+    "unicode/norm",
+    "unicode/rangetable",
+  ]
+  pruneopts = "UT"
+  revision = "342b2e1fbaa52c93f31447ad2c6abc048c63e475"
+  version = "v0.3.2"
 
 [solve-meta]
   analyzer-name = "dep"
@@ -79,6 +117,7 @@
     "github.com/aws/aws-sdk-go-v2/service/lambda",
     "github.com/aws/aws-sdk-go-v2/service/s3",
     "github.com/aws/aws-sdk-go-v2/service/sns",
+    "github.com/aws/aws-sdk-go-v2/service/sts",
   ]
   solver-name = "gps-cdcl"
   solver-version = 1
