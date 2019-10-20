@@ -35,7 +35,7 @@ type action func(context.Context, aws.Config, chan<- info)
 
 const defaultName = "aws-serverless-health"
 
-var inLambda = os.Getenv("LAMBDA_TASK_ROOT") != ""
+var live = os.Getenv("LAMBDA_TASK_ROOT") != ""
 
 func logError(cfg aws.Config, err error) {
 	fmt.Printf("%v: %v\n", cfg.Region, err)
@@ -311,19 +311,19 @@ func getCloudWatchEventRuleCount(ctx context.Context, cfg aws.Config, runningCou
 	return count
 }
 
-func getSupportedRegions(ctx context.Context, baseRegion aws.Config) []string {
+func getSupportedRegions(ctx context.Context, baseConfig aws.Config) []string {
 	mapping := make(map[string]chan bool)
 
 	partition, _ := endpoints.NewDefaultResolver().Partitions().ForPartition("aws")
 
 	for region := range partition.Regions() {
-		cfg := baseRegion.Copy()
+		cfg := baseConfig.Copy()
 		cfg.Region = region
 
 		e := make(chan bool)
 
 		go func(c chan bool, r aws.Config) {
-			c <- enabled(ctx, r)
+			c <- regionEnabled(ctx, r)
 			close(c)
 		}(e, cfg)
 
@@ -343,7 +343,7 @@ func getSupportedRegions(ctx context.Context, baseRegion aws.Config) []string {
 	return regions
 }
 
-func enabled(ctx context.Context, cfg aws.Config) bool {
+func regionEnabled(ctx context.Context, cfg aws.Config) bool {
 	svc := sts.New(cfg)
 	params := &sts.GetCallerIdentityInput{}
 	req := svc.GetCallerIdentityRequest(params)
@@ -452,7 +452,7 @@ func handler(ctx context.Context) ([]byte, error) {
 
 	payload, _ := json.MarshalIndent(&report, "", "  ")
 
-	if inLambda {
+	if live {
 		var wg sync.WaitGroup
 		wg.Add(2)
 
@@ -473,7 +473,7 @@ func handler(ctx context.Context) ([]byte, error) {
 }
 
 func main() {
-	if inLambda {
+	if live {
 		le.Start(handler)
 	} else {
 		p, _ := handler(context.Background())
