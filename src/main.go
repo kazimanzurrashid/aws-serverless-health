@@ -92,23 +92,23 @@ func getCloudFormationLimit(ctx context.Context, cfg aws.Config) int {
 	req := svc.DescribeAccountLimitsRequest(params)
 	res, err := req.Send(ctx)
 
-	var r int
+	var l int
 
 	if err != nil {
 		logError(cfg, err)
-		return r
+		return l
 	}
 
 	if res.AccountLimits != nil {
 		for _, limit := range res.AccountLimits {
 			if *limit.Name == "StackLimit" {
-				r = int(*limit.Value)
+				l = int(*limit.Value)
 				break
 			}
 		}
 	}
 
-	return r
+	return l
 }
 
 func getAPIGatewayInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
