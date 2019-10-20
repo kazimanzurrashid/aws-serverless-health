@@ -431,7 +431,7 @@ func load(ctx context.Context, cfg aws.Config, out chan<- map[string]info) {
 	out <- result
 }
 
-func handler(ctx context.Context) error {
+func handler(ctx context.Context) ([]byte, error) {
 	base, _ := external.LoadDefaultAWSConfig()
 
 	results := make(map[string]chan map[string]info)
@@ -450,8 +450,9 @@ func handler(ctx context.Context) error {
 		report[k] = <-v
 	}
 
+	payload, _ := json.MarshalIndent(&report, "", "  ")
+
 	if inLambda {
-		payload, _ := json.Marshal(&report)
 		var wg sync.WaitGroup
 		wg.Add(2)
 
@@ -466,18 +467,16 @@ func handler(ctx context.Context) error {
 		}()
 
 		wg.Wait()
-	} else {
-		payload, _ := json.MarshalIndent(&report, "", "  ")
-		fmt.Println(string(payload))
 	}
 
-	return nil
+	return payload, nil
 }
 
 func main() {
 	if inLambda {
 		le.Start(handler)
 	} else {
-		_ = handler(context.Background())
+		p, _ := handler(context.Background())
+		fmt.Println(string(p))
 	}
 }
