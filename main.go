@@ -4,7 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
-	"fmt"
+	"log"
 	"os"
 	"sort"
 	"strings"
@@ -33,12 +33,11 @@ type info struct {
 
 type action func(context.Context, aws.Config, chan<- info)
 
-const defaultName = "aws-serverless-health"
-
+var appName = os.Getenv("APP_NAME")
 var live = os.Getenv("LAMBDA_TASK_ROOT") != ""
 
 func logError(cfg aws.Config, err error) {
-	fmt.Printf("%v: %v\n", cfg.Region, err)
+	log.Printf("%v: %v\n", cfg.Region, err)
 }
 
 func getCloudFormationInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
@@ -48,14 +47,12 @@ func getCloudFormationInfo(ctx context.Context, cfg aws.Config, out chan<- info)
 	l := make(chan int)
 
 	go func() {
-		count := getCloudFormationStackCount(ctx, cfg, 0, nil)
-		c <- count
+		c <- getCloudFormationStackCount(ctx, cfg, 0, nil)
 		close(c)
 	}()
 
 	go func() {
-		limit := getCloudFormationLimit(ctx, cfg)
-		l <- limit
+		l <- getCloudFormationLimit(ctx, cfg)
 		close(l)
 	}()
 
@@ -92,34 +89,34 @@ func getCloudFormationLimit(ctx context.Context, cfg aws.Config) int {
 	req := svc.DescribeAccountLimitsRequest(params)
 	res, err := req.Send(ctx)
 
-	var l int
+	var r int
 
 	if err != nil {
 		logError(cfg, err)
-		return l
+		return r
 	}
 
 	if res.AccountLimits != nil {
 		for _, limit := range res.AccountLimits {
 			if *limit.Name == "StackLimit" {
-				l = int(*limit.Value)
+				r = int(*limit.Value)
 				break
 			}
 		}
 	}
 
-	return l
+	return r
 }
 
 func getAPIGatewayInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
 	defer close(out)
 
 	c := make(chan int)
-	go func() {
+	go func(r aws.Config) {
 		count := getAPIGatewayAPICount(ctx, cfg, 0, nil)
 		c <- count
 		close(c)
-	}()
+	}(cfg)
 
 	out <- info{<-c, 60}
 }
@@ -175,8 +172,7 @@ func getDynamoDBInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
 	c := make(chan int)
 
 	go func() {
-		count := getDynamoDBTableCount(ctx, cfg, 0, nil)
-		c <- count
+		c <- getDynamoDBTableCount(ctx, cfg, 0, nil)
 		close(c)
 	}()
 
@@ -214,14 +210,12 @@ func getKinesisInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
 	l := make(chan int)
 
 	go func() {
-		count := getKinesisStreamCount(ctx, cfg, 0, nil)
-		c <- count
+		c <- getKinesisStreamCount(ctx, cfg, 0, nil)
 		close(c)
 	}()
 
 	go func() {
-		limit := getKinesisLimit(ctx, cfg)
-		l <- limit
+		l <- getKinesisLimit(ctx, cfg)
 		close(l)
 	}()
 
@@ -279,8 +273,7 @@ func getCloudWatchEventInfo(ctx context.Context, cfg aws.Config, out chan<- info
 	c := make(chan int)
 
 	go func() {
-		count := getCloudWatchEventRuleCount(ctx, cfg, 0, nil)
-		c <- count
+		c <- getCloudWatchEventRuleCount(ctx, cfg, 0, nil)
 		close(c)
 	}()
 
@@ -311,19 +304,19 @@ func getCloudWatchEventRuleCount(ctx context.Context, cfg aws.Config, runningCou
 	return count
 }
 
-func getSupportedRegions(ctx context.Context, baseConfig aws.Config) []string {
+func getSupportedRegions(ctx context.Context, baseRegion aws.Config) []string {
 	mapping := make(map[string]chan bool)
 
 	partition, _ := endpoints.NewDefaultResolver().Partitions().ForPartition("aws")
 
 	for region := range partition.Regions() {
-		cfg := baseConfig.Copy()
+		cfg := baseRegion.Copy()
 		cfg.Region = region
 
 		e := make(chan bool)
 
 		go func(c chan bool, r aws.Config) {
-			c <- regionEnabled(ctx, r)
+			c <- enabled(ctx, r)
 			close(c)
 		}(e, cfg)
 
@@ -343,7 +336,7 @@ func getSupportedRegions(ctx context.Context, baseConfig aws.Config) []string {
 	return regions
 }
 
-func regionEnabled(ctx context.Context, cfg aws.Config) bool {
+func enabled(ctx context.Context, cfg aws.Config) bool {
 	svc := sts.New(cfg)
 	params := &sts.GetCallerIdentityInput{}
 	req := svc.GetCallerIdentityRequest(params)
@@ -353,52 +346,48 @@ func regionEnabled(ctx context.Context, cfg aws.Config) bool {
 }
 
 func publishInSns(ctx context.Context, cfg aws.Config, payload []byte) {
-	topicName := os.Getenv("SNS_TOPIC")
-	if topicName == "" {
-		topicName = defaultName
+	topicArn := getTopicArn(ctx, cfg, nil)
+
+	if topicArn == nil {
+		return
 	}
 
 	message := string(payload)
-	topicArn := getTopicArn(ctx, cfg, topicName, nil)
 	svc := sns.New(cfg)
-	params := &sns.PublishInput{TopicArn: &topicArn, Message: &message}
+	params := &sns.PublishInput{TopicArn: topicArn, Message: &message}
 	req := svc.PublishRequest(params)
 	_, _ = req.Send(ctx)
 }
 
-func getTopicArn(ctx context.Context, cfg aws.Config, topicName string, lastToken *string) string {
+func getTopicArn(ctx context.Context, cfg aws.Config, lastToken *string) *string {
 	svc := sns.New(cfg)
 	params := &sns.ListTopicsInput{NextToken: lastToken}
 	req := svc.ListTopicsRequest(params)
 	res, _ := req.Send(ctx)
 
 	for _, topic := range res.Topics {
-		if strings.HasSuffix(*topic.TopicArn, topicName) {
-			return *topic.TopicArn
+		if strings.HasSuffix(*topic.TopicArn, appName) {
+			return topic.TopicArn
 		}
 	}
 
 	if res.NextToken != nil {
-		return getTopicArn(ctx, cfg, topicName, res.NextToken)
+		return getTopicArn(ctx, cfg, res.NextToken)
 	}
 
-	panic("Unable to find the sns topic \"" + topicName + "\".")
+	log.Fatalf("Unable to find the sns topic %q.", appName)
+
+	return nil
 }
 
 func putInS3(ctx context.Context, cfg aws.Config, payload []byte) {
-	bucketName := os.Getenv("S3_BUCKET")
-	if bucketName == "" {
-		bucketName = defaultName
-	}
-
 	key := time.Now().Format("20060102150405") + ".json"
-	contentType := "text/json"
 
 	svc := s3.New(cfg)
 	params := &s3.PutObjectInput{
-		Bucket:       &bucketName,
+		Bucket:       &appName,
 		Key:          &key,
-		ContentType:  &contentType,
+		ContentType:  aws.String("text/json"),
 		Body:         bytes.NewReader(payload),
 		StorageClass: s3.StorageClassReducedRedundancy}
 	req := svc.PutObjectRequest(params)
@@ -431,14 +420,14 @@ func load(ctx context.Context, cfg aws.Config, out chan<- map[string]info) {
 	out <- result
 }
 
-func handler(ctx context.Context) ([]byte, error) {
-	base, _ := external.LoadDefaultAWSConfig()
+func handler(ctx context.Context) error {
+	defaultConfig, _ := external.LoadDefaultAWSConfig()
 
 	results := make(map[string]chan map[string]info)
-	regions := getSupportedRegions(ctx, base)
+	regions := getSupportedRegions(ctx, defaultConfig)
 
 	for _, region := range regions {
-		cfg := base.Copy()
+		cfg := defaultConfig.Copy()
 		cfg.Region = region
 		c := make(chan map[string]info)
 		results[cfg.Region] = c
@@ -450,33 +439,34 @@ func handler(ctx context.Context) ([]byte, error) {
 		report[k] = <-v
 	}
 
-	payload, _ := json.MarshalIndent(&report, "", "  ")
-
 	if live {
+		payload, _ := json.Marshal(&report)
 		var wg sync.WaitGroup
 		wg.Add(2)
 
 		go func() {
-			publishInSns(ctx, base, payload)
+			publishInSns(ctx, defaultConfig, payload)
 			wg.Done()
 		}()
 
 		go func() {
-			putInS3(ctx, base, payload)
+			putInS3(ctx, defaultConfig, payload)
 			wg.Done()
 		}()
 
 		wg.Wait()
+	} else {
+		payload, _ := json.MarshalIndent(&report, "", "  ")
+		log.Println(string(payload))
 	}
 
-	return payload, nil
+	return nil
 }
 
 func main() {
 	if live {
 		le.Start(handler)
 	} else {
-		p, _ := handler(context.Background())
-		fmt.Println(string(p))
+		_ = handler(context.Background())
 	}
 }
