@@ -360,6 +360,10 @@ func publishInSns(ctx context.Context, cfg aws.Config, payload []byte) {
 }
 
 func getTopicArn(ctx context.Context, cfg aws.Config, lastToken *string) *string {
+	if appName == "" {
+		return nil
+	}
+
 	svc := sns.New(cfg)
 	params := &sns.ListTopicsInput{NextToken: lastToken}
 	req := svc.ListTopicsRequest(params)
@@ -381,6 +385,10 @@ func getTopicArn(ctx context.Context, cfg aws.Config, lastToken *string) *string
 }
 
 func putInS3(ctx context.Context, cfg aws.Config, payload []byte) {
+	if appName == "" {
+		return
+	}
+
 	key := time.Now().Format("20060102150405") + ".json"
 
 	svc := s3.New(cfg)
