@@ -12,6 +12,7 @@ import (
 	"time"
 
 	le "github.com/aws/aws-lambda-go/lambda"
+
 	"github.com/aws/aws-sdk-go-v2/aws"
 	"github.com/aws/aws-sdk-go-v2/aws/endpoints"
 	"github.com/aws/aws-sdk-go-v2/aws/external"
@@ -43,8 +44,8 @@ func logError(cfg aws.Config, err error) {
 func getCloudFormationInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
 	defer close(out)
 
-	c := make(chan int)
-	l := make(chan int)
+	c := make(chan int, 1)
+	l := make(chan int, 1)
 
 	go func() {
 		c <- getCloudFormationStackCount(ctx, cfg, 0, nil)
@@ -111,7 +112,7 @@ func getCloudFormationLimit(ctx context.Context, cfg aws.Config) int {
 func getAPIGatewayInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
 	defer close(out)
 
-	c := make(chan int)
+	c := make(chan int, 1)
 	go func(r aws.Config) {
 		count := getAPIGatewayAPICount(ctx, cfg, 0, nil)
 		c <- count
@@ -169,7 +170,7 @@ func getLambdaInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
 func getDynamoDBInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
 	defer close(out)
 
-	c := make(chan int)
+	c := make(chan int, 1)
 
 	go func() {
 		c <- getDynamoDBTableCount(ctx, cfg, 0, nil)
@@ -206,8 +207,8 @@ func getDynamoDBTableCount(ctx context.Context, cfg aws.Config, runningCount int
 func getKinesisInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
 	defer close(out)
 
-	c := make(chan int)
-	l := make(chan int)
+	c := make(chan int, 1)
+	l := make(chan int, 1)
 
 	go func() {
 		c <- getKinesisStreamCount(ctx, cfg, 0, nil)
@@ -270,7 +271,7 @@ func getKinesisLimit(ctx context.Context, cfg aws.Config) int {
 func getCloudWatchEventInfo(ctx context.Context, cfg aws.Config, out chan<- info) {
 	defer close(out)
 
-	c := make(chan int)
+	c := make(chan int, 1)
 
 	go func() {
 		c <- getCloudWatchEventRuleCount(ctx, cfg, 0, nil)
@@ -413,7 +414,7 @@ func load(ctx context.Context, cfg aws.Config, out chan<- map[string]info) {
 		"kinesis":         getKinesisInfo,
 		"cloudWatchEvent": getCloudWatchEventInfo}
 
-	results := make(map[string]chan info)
+	results := make(map[string]chan info, len(actions))
 	for k, v := range actions {
 		t := make(chan info)
 		results[k] = t
@@ -431,8 +432,8 @@ func load(ctx context.Context, cfg aws.Config, out chan<- map[string]info) {
 func handler(ctx context.Context) error {
 	defaultConfig, _ := external.LoadDefaultAWSConfig()
 
-	results := make(map[string]chan map[string]info)
 	regions := getSupportedRegions(ctx, defaultConfig)
+	results := make(map[string]chan map[string]info, len(regions))
 
 	for _, region := range regions {
 		cfg := defaultConfig.Copy()
